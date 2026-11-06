@@ -24,9 +24,9 @@ Claude Code ──hooks──▶ ~/.claude-tv/working/<session>   (a turn you pr
                                 │
                                 ▼
                     Photosynthesizing.app (the strip, SwiftUI panel)
-                                │  HTTP over Tailscale
+                                │  HTTP on 127.0.0.1
                                 ▼
-          always-on Mac · toreplyd (Swift, no dependencies)
+          toreplyd (Swift, no dependencies)
             ├── chat.db              iMessage + SMS, read-only
             ├── CallHistory          last phone/FaceTime call, read-only
             ├── AddressBook          names, photos, birthdays, read-only
@@ -40,7 +40,7 @@ Claude Code ──hooks──▶ ~/.claude-tv/working/<session>   (a turn you pr
    turns Claude starts by itself. The strip watches that folder: four seconds into a
    turn it slides in, and when the turn ends it glows and slides out. It stays put while
    you're mid-reply.
-2. **What to show.** `toreplyd` runs on an always-on Mac. It reads the Messages database
+2. **What to show.** `toreplyd` is a small server on the same Mac. It reads the Messages database
    read-only, decodes message bodies with Apple's own unarchiver, and keeps its own small
    database of what you've triaged. "Done" means done as of a particular message, so a
    new text puts someone back in your queue automatically. Other networks come in through
@@ -49,45 +49,60 @@ Claude Code ──hooks──▶ ~/.claude-tv/working/<session>   (a turn you pr
 
 ## Setup
 
-You need an always-on Mac signed in to iMessage, with Tailscale, and a Mac you work on
-with Claude Code. They can be the same Mac.
-
-**Server (the always-on Mac)**
+You need a Mac signed in to iMessage, with Messages in iCloud turned on, Xcode or the
+Xcode command line tools, and Claude Code. Everything runs on that one Mac.
 
 ```bash
-cp toreply.env.example toreply.env      # set TOREPLY_REMOTE to its ssh host
-./deploy-server.sh                      # builds, signs, installs, restarts
+git clone https://github.com/alexa-loste/photosynthesizing && cd photosynthesizing
+./install.sh
+```
+
+The script builds the server and the strip, starts both at login, points the strip at
+the server, and adds the Claude Code hook to `~/.claude/settings.json` (keeping a
+`.bak` copy). Run it again after pulling changes.
+
+Then the one step it can't do for you: give the server **Full Disk Access**, so it can
+read Messages, call history and Contacts (read-only). The script opens the settings
+page; click **+**, press **⌘⇧G**, paste `~/toreply/bin/toreplyd`, and switch it on. Then:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.photosynthesizing.server
+```
+
+The first time you send a reply, macOS asks whether the server may control Messages.
+Allow it.
+
+**WhatsApp, Instagram and Messenger (optional).** Install
+[Beeper Desktop](https://www.beeper.com), sign in to those accounts, turn on its Desktop
+API (Settings → Integrations), create a token, and save it:
+
+```bash
+umask 077; cat > ~/.toreply/beeper-token     # paste the token, then Ctrl-D
+launchctl kickstart -k gui/$(id -u)/com.photosynthesizing.server
+```
+
+**Checking it.** `~/toreply/bin/toreplyd doctor` reports whether it can read Messages,
+without printing any message content.
+
+### Running the server on another Mac
+
+If you have an always-on Mac, the server can live there instead, so other clients can
+reach it while your laptop sleeps. It's reached over Tailscale:
+
+```bash
+cp toreply.env.example toreply.env              # set TOREPLY_REMOTE to its ssh host
+./deploy-server.sh                              # builds, signs, installs, restarts there
 ssh <host> 'bash -s' < tools/install-agent.sh   # once: keep it running
 ```
 
-Grant the installed `~/toreply/bin/toreplyd` Full Disk Access on that Mac (System
-Settings → Privacy & Security). It's signed with your Apple Development certificate, so
-the grant survives future deploys.
-
-Optional: install Beeper Desktop there, enable its Desktop API (Settings →
-Integrations), and save a token to `~/.toreply/beeper-token`.
-
-**Strip (your Mac)**
-
-```bash
-cd strip && ./build.sh && open build/Photosynthesizing.app
-```
-
-Write `~/.claude-tv/config.json`:
+Grant Full Disk Access to `~/toreply/bin/toreplyd` on that Mac, then on your laptop build
+the strip (`cd strip && ./build.sh`), add the hook with
+`python3 tools/add-hooks.py ~/.claude/settings.json hook/tv_hook.py`, and write
+`~/.claude-tv/config.json`:
 
 ```json
-{"baseURL": "http://<server's tailscale address>:8787/", "token": "<ssh host 'cat ~/.toreply/token'>"}
+{"baseURL": "http://<server's tailscale address>:8787/", "token": "<cat ~/.toreply/token on that Mac>"}
 ```
-
-Add the hook to `~/.claude/settings.json` for `UserPromptSubmit`, `Stop`,
-`Notification`, `PostToolUse` and `SessionEnd`:
-
-```json
-{"hooks": [{"type": "command", "command": "/usr/bin/python3 /path/to/hook/tv_hook.py", "timeout": 5}]}
-```
-
-To start it at login, add a LaunchAgent that runs
-`strip/build/Photosynthesizing.app/Contents/MacOS/Photosynthesizing` with `RunAtLoad`.
 
 **Using it**: it appears on its own. ⌃⌥Space or the menu bar icon opens it by hand.
 With several Claude sessions going, the strip lists each one (working, needs you, done)
