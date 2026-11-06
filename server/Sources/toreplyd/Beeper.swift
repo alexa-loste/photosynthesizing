@@ -26,6 +26,10 @@ final class Beeper {
     private let lock = NSLock()
     /// Thread key → Beeper image URL (mxc://, file://, or a bare local path).
     private var avatarSources: [String: String] = [:]
+    /// Attachment id handed to clients → Beeper's URL for it. The shared Attachment model
+    /// has integer ids (chat.db ROWIDs), so Beeper's mxc:// URLs get a negative stand-in
+    /// that can't collide with a ROWID.
+    private var attachmentSources: [Int64: (url: String, mimeType: String)] = [:]
     private var cached: [ThreadGroup] = []
     private var cachedAt: Double = 0
     private static let maxCacheAge: Double = 15
@@ -62,7 +66,12 @@ final class Beeper {
     private struct Participants: Decodable { var items: [User] }
 
     private struct WireAttachment: Decodable {
+        var id: String?
+        var srcURL: String?
         var type: String?
+        var mimeType: String?
+        var fileName: String?
+        var fileSize: Double?
         var isSticker: Bool?
     }
 
@@ -264,10 +273,50 @@ final class Beeper {
                     isDelivered: true,
                     reactions: (wire.reactions ?? []).compactMap { reaction in
                         reaction.reactionKey.map { Reaction(emoji: $0, fromMe: false, sender: reaction.participantID ?? "") }
-                    }
+                    },
+                    attachments: (wire.attachments ?? []).compactMap(register)
                 )
             }
             .sorted { $0.date < $1.date }
+    }
+
+    private func register(_ wire: WireAttachment) -> Attachment? {
+        guard let url = wire.srcURL ?? wire.id, !url.isEmpty else { return nil }
+        let mimeType = wire.mimeType ?? (wire.type == "img" ? "image/jpeg" : "application/octet-stream")
+        let id = Self.standInID(for: url)
+        lock.lock()
+        attachmentSources[id] = (url, mimeType)
+        lock.unlock()
+        return Attachment(
+            id: id,
+            name: wire.fileName ?? "",
+            uti: "",
+            mimeType: mimeType,
+            isSticker: wire.isSticker == true,
+            bytes: Int64(wire.fileSize ?? 0),
+            isImage: wire.type == "img" || mimeType.hasPrefix("image/")
+        )
+    }
+
+    /// FNV-1a of the URL with the sign bit set: stable across restarts, always negative.
+    private static func standInID(for url: String) -> Int64 {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in url.utf8 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+        return Int64(bitPattern: hash | 0x8000_0000_0000_0000)
+    }
+
+    /// Bytes for an attachment id from `messages(key:)`, via Beeper's asset server.
+    func attachment(id: Int64) -> (data: Data, mimeType: String)? {
+        lock.lock()
+        let source = attachmentSources[id]
+        lock.unlock()
+        guard let source else { return nil }
+        var url = source.url
+        if url.hasPrefix("/") { url = "file://" + url }
+        guard let data = try? callData("assets/serve", query: [URLQueryItem(name: "url", value: url)]) else {
+            return nil
+        }
+        return (data, source.mimeType)
     }
 
     func send(key: String, text: String) throws {

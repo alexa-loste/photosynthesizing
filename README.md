@@ -86,8 +86,13 @@ Add the hook to `~/.claude/settings.json` for `UserPromptSubmit`, `Stop`,
 {"hooks": [{"type": "command", "command": "/usr/bin/python3 /path/to/hook/tv_hook.py", "timeout": 5}]}
 ```
 
+To start it at login, add a LaunchAgent that runs
+`strip/build/Photosynthesizing.app/Contents/MacOS/Photosynthesizing` with `RunAtLoad`.
+
 **Using it**: it appears on its own. ⌃⌥Space or the menu bar icon opens it by hand.
-`strip/demo.sh 60` pretends Claude is working for a minute.
+With several Claude sessions going, the strip lists each one (working, needs you, done)
+and the screen glows whenever any one of them finishes. `strip/demo.sh 60` pretends
+Claude is working for a minute.
 
 ## Notes
 

@@ -42,6 +42,8 @@ final class StripModel: ObservableObject {
     }
 
     @Published var claude: Claude = .idle
+    /// Every Claude session you prompted that's working, waiting on you, or just finished.
+    @Published var sessions: [ClaudeWatch.Session] = []
     @Published var tab: Tab = .reply
     /// Each queue's threads, and the thread open in each, so switching tabs keeps your place.
     @Published var queues: [Tab: [ThreadSummary]] = [:]

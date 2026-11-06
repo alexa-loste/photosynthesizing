@@ -73,6 +73,14 @@ final class API {
             guard let id = Int64(route[1]) else {
                 return .response(.error(400, "bad attachment id"))
             }
+            if id < 0 {
+                guard let asset = service.beeperAttachment(id: id) else {
+                    return .response(.error(404, "no such attachment"))
+                }
+                var response = HTTPResponse.data(asset.data, contentType: asset.mimeType)
+                response.headers["Cache-Control"] = "private, max-age=31536000, immutable"
+                return .response(response)
+            }
             do {
                 guard let file = try service.attachmentFile(id: id),
                       let data = FileManager.default.contents(atPath: file.path) else {

@@ -219,6 +219,11 @@ final class ThreadService {
         return try chatDB.messages(chatRowIDs: group.chatRowIDs, limit: limit, before: before)
     }
 
+    /// Attachments with negative ids live in Beeper, not chat.db.
+    func beeperAttachment(id: Int64) -> (data: Data, mimeType: String)? {
+        beeper?.attachment(id: id)
+    }
+
     func attachmentFile(id: Int64) throws -> (path: String, mimeType: String, name: String)? {
         try chatDB.attachmentFile(id: id)
     }

@@ -29,6 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let forceShow = CommandLine.arguments.contains("--show")
     /// Opened from the menu bar or ⌃⌥Space: stays until you close it, whatever Claude does.
     private var openedByHand = false
+    /// Sessions that were working on the previous tick, to spot the moment one finishes.
+    private var lastWorking: Set<String> = []
     private var openedByHandAt = Date.distantPast
     private var statusItem: NSStatusItem?
     private var hotKey: EventHotKeyRef?
@@ -37,6 +39,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model = StripModel(config: Self.loadConfig())
         if CommandLine.arguments.contains("--keep-in-touch") { model.tab = .keepInTouch }
         if CommandLine.arguments.contains("--all") { model.tab = .all }
+        // `--open <thread key>` (with --show --snapshot) renders one conversation.
+        if let flag = CommandLine.arguments.firstIndex(of: "--open"), CommandLine.arguments.count > flag + 1 {
+            model.tab = .all
+            model.selected[.all] = CommandLine.arguments[flag + 1]
+        }
 
         panel = StripPanel(
             contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 600),
@@ -116,18 +123,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func tick() {
         let now = Date()
         let sessions = ClaudeWatch.sessions(now: now)
-        let running = sessions.filter { !$0.needsYou }
+        let running = sessions.filter(\.isWorking)
         let waiting = sessions.filter(\.needsYou)
+        model.sessions = sessions
 
-        let wasWorking: Bool
-        if case .working = model.claude { wasWorking = true } else { wasWorking = false }
-        defer {
-            // Claude just stopped, or stopped to ask you something: say so at the edge of
-            // the screen, where it reaches you whichever window you're looking at.
-            if wasWorking, visible, model.claude != .idle, !isWorking(model.claude) {
-                ScreenGlow.pulse(color: waiting.isEmpty ? .systemGreen : .systemOrange)
-            }
+        // Any one session that just finished, or just stopped to ask you something, gets
+        // the glow at the edge of the screen, even while others keep working: with several
+        // going, that's the one you're waiting on.
+        let finished = sessions.filter { $0.isDone && lastWorking.contains($0.id) }
+        let blocked = sessions.filter { $0.needsYou && lastWorking.contains($0.id) }
+        if !blocked.isEmpty {
+            ScreenGlow.pulse(color: .systemOrange)
+        } else if !finished.isEmpty {
+            ScreenGlow.pulse(color: .systemGreen)
         }
+        lastWorking = Set(running.map(\.id))
 
         if let since = running.map(\.started).min() {
             model.claude = .working(since: since, projects: running.map(\.project))

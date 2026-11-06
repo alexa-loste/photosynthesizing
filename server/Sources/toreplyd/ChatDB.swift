@@ -148,6 +148,7 @@ final class ChatDB {
         for (key, group) in groups {
             groups[key]?.category = classify(group)
         }
+        try preferIMessage(&groups)
 
         return order.compactMap { groups[$0] }
             .sorted { $0.lastMessage.date > $1.lastMessage.date }
@@ -176,6 +177,32 @@ final class ChatDB {
             out[stmt.int(0)] = (AppleDate.toUnix(stmt.int(1)), Int(stmt.int(2)), Int(stmt.int(3)))
         }
         return out
+    }
+
+    /// Messages can file a person's conversation under an SMS chat row even when you've been
+    /// texting over iMessage (it happened with a friend whose chat row said SMS while every
+    /// recent message was iMessage). Sending through that label goes out as SMS, which this
+    /// Mac can't send without the iPhone, and fails. So a thread that has seen iMessage in
+    /// the last 90 days is treated as iMessage, for sending and for its label.
+    private func preferIMessage(_ groups: inout [String: ThreadGroup]) throws {
+        let candidates = groups.values.filter { !$0.isGroup && $0.service != "iMessage" }
+        let rowIDs = candidates.flatMap(\.chatRowIDs)
+        guard !rowIDs.isEmpty else { return }
+        let cutoff = AppleDate.fromUnix(Date().timeIntervalSince1970 - 90 * 86_400)
+        let placeholders = Array(repeating: "?", count: rowIDs.count).joined(separator: ",")
+        let stmt = try db.prepare(
+            """
+            SELECT DISTINCT j.chat_id FROM message m
+            JOIN chat_message_join j ON j.message_id = m.ROWID
+            WHERE j.chat_id IN (\(placeholders)) AND m.service = 'iMessage' AND m.date > ?
+            """,
+            rowIDs.map { .int($0) } + [.int(cutoff)]
+        )
+        var withIMessage: Set<Int64> = []
+        while stmt.step() { withIMessage.insert(stmt.int(0)) }
+        for group in candidates where group.chatRowIDs.contains(where: withIMessage.contains) {
+            groups[group.key]?.service = "iMessage"
+        }
     }
 
     /// Split real people from the machines. Without this the To Reply bucket fills with
@@ -541,6 +568,7 @@ final class ChatDB {
                 groups[key] = group
             }
         }
+        try preferIMessage(&groups)
 
         return groups.values
             .sorted { $0.lastMessage.date > $1.lastMessage.date }

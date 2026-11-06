@@ -5,6 +5,7 @@ State is plain files so the strip app only has to watch a directory:
 
     ~/.claude-tv/working/<session_id>    a turn you prompted is running
     ~/.claude-tv/attention/<session_id>  that turn is waiting on you (permission, question)
+    ~/.claude-tv/done/<session_id>       that turn finished; cleared by your next prompt there
 
 Wired to UserPromptSubmit, Stop, Notification, PostToolUse and SessionEnd. It must never block or
 fail a turn, so every path exits 0 and prints nothing.
@@ -17,6 +18,7 @@ import time
 ROOT = os.path.expanduser("~/.claude-tv")
 WORKING = os.path.join(ROOT, "working")
 ATTENTION = os.path.join(ROOT, "attention")
+DONE = os.path.join(ROOT, "done")
 LOG = os.path.join(ROOT, "hook.log")
 
 # Turns the desktop app starts on its own. They arrive as UserPromptSubmit like a typed
@@ -62,12 +64,13 @@ def main():
     session = payload.get("session_id", "")
     if not session:
         return
-    os.makedirs(WORKING, exist_ok=True)
-    os.makedirs(ATTENTION, exist_ok=True)
+    for directory in (WORKING, ATTENTION, DONE):
+        os.makedirs(directory, exist_ok=True)
 
     if event == "UserPromptSubmit":
         prompted, reason = is_prompted_by_a_person(payload)
         remove(ATTENTION, session)
+        remove(DONE, session)
         if not prompted:
             log(event, session, f"skip ({reason})")
             return
@@ -94,11 +97,25 @@ def main():
             remove(ATTENTION, session)
             log(event, session, "working again")
 
-    elif event in ("Stop", "SessionEnd"):
-        if os.path.exists(os.path.join(WORKING, session)):
+    elif event == "Stop":
+        working = os.path.join(WORKING, session)
+        if os.path.exists(working):
+            # Keep what the turn was about, so the strip can say which session finished.
+            try:
+                with open(working) as f:
+                    record = json.load(f)
+            except (OSError, ValueError):
+                record = {}
+            record["finished"] = time.time()
+            with open(os.path.join(DONE, session), "w") as f:
+                json.dump(record, f)
             log(event, session, "done")
         remove(WORKING, session)
         remove(ATTENTION, session)
+
+    elif event == "SessionEnd":
+        for directory in (WORKING, ATTENTION, DONE):
+            remove(directory, session)
 
 
 if __name__ == "__main__":

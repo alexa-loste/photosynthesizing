@@ -8,6 +8,9 @@ struct StripView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            if model.sessions.count > 1 {
+                SessionList(model: model, onBack: onBackToClaude)
+            }
             Divider()
             tabs
             if let error = model.error {
@@ -212,6 +215,7 @@ private struct ThreadPane: View {
                             Bubble(
                                 message: message,
                                 showSender: focus.isGroup,
+                                attachmentURL: { model.client?.attachmentURL(id: $0) },
                                 onReact: focus.key.hasPrefix("bp:")
                                     ? { emoji in model.react(to: message, emoji: emoji) } : nil
                             )
@@ -324,6 +328,7 @@ private struct CadenceMenu: View {
 private struct Bubble: View {
     var message: Message
     var showSender: Bool
+    var attachmentURL: (Int64) -> URL?
     /// Set for Beeper threads, where reactions can be sent. Right-click a bubble to react.
     var onReact: ((String) -> Void)?
 
@@ -336,6 +341,10 @@ private struct Bubble: View {
                 if showSender && !message.isFromMe && !message.sender.isEmpty {
                     Text(message.sender).font(.caption2).foregroundStyle(.secondary)
                 }
+                ForEach(message.attachments) { attachment in
+                    AttachmentView(attachment: attachment, url: attachmentURL(attachment.id))
+                }
+                if let displayText {
                 Text(displayText)
                     .textSelection(.enabled)
                     .padding(.horizontal, 10)
@@ -354,6 +363,7 @@ private struct Bubble: View {
                             }
                         }
                     }
+                }
                 if !message.reactions.isEmpty {
                     Text(message.reactions.map(\.emoji).joined(separator: " "))
                         .font(.caption)
@@ -371,9 +381,61 @@ private struct Bubble: View {
         }
     }
 
-    private var displayText: String {
+    /// The text bubble, or nil when the message is only attachments. Beeper fills empty
+    /// text with a stand-in like "📷 Photo", which the attachment itself now replaces.
+    private var displayText: String? {
+        let standIns: Set<String> = ["📷 Photo", "🎥 Video", "🎤 Voice message", "Sticker", "📎 File", "📎 Attachment"]
+        if !message.attachments.isEmpty && (message.text.isEmpty || standIns.contains(message.text)) {
+            return nil
+        }
         if !message.text.isEmpty { return message.text }
         return message.hasAttachments ? "📎 Attachment" : "…"
+    }
+}
+
+/// A photo inline; anything else as a chip that opens the file.
+private struct AttachmentView: View {
+    var attachment: Attachment
+    var url: URL?
+
+    var body: some View {
+        if attachment.isImage {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFit()
+                        .frame(maxWidth: attachment.isSticker ? 110 : 240, maxHeight: 280)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .onTapGesture { if let url { NSWorkspace.shared.open(url) } }
+                case .failure:
+                    chip("photo", "Photo isn't on the Mac mini yet")
+                default:
+                    RoundedRectangle(cornerRadius: 12).fill(.quaternary)
+                        .frame(width: 160, height: 120)
+                        .overlay(ProgressView().controlSize(.small))
+                }
+            }
+        } else {
+            Button { if let url { NSWorkspace.shared.open(url) } } label: {
+                chip(attachment.isVideo ? "video" : "doc",
+                     attachment.name.isEmpty ? (attachment.isVideo ? "Video" : "File") : attachment.name)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func chip(_ symbol: String, _ title: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol)
+            Text(title).lineLimit(1)
+            if attachment.bytes > 0 && !attachment.isImage {
+                Text(attachment.sizeLabel).foregroundStyle(.secondary)
+            }
+        }
+        .font(.callout)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 12).fill(.quaternary))
     }
 }
 
@@ -850,5 +912,68 @@ private struct ConversationList: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// With more than one Claude session going: each one you prompted, what you asked, and
+/// whether it's working, waiting on you, or done, so you can see which one to go back to.
+private struct SessionList: View {
+    @ObservedObject var model: StripModel
+    var onBack: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(model.sessions.prefix(5)) { session in
+                HStack(spacing: 8) {
+                    icon(session)
+                        .frame(width: 14)
+                    Text(session.prompt.isEmpty ? session.project : session.prompt)
+                        .lineLimit(1)
+                        .foregroundStyle(session.isWorking ? .secondary : .primary)
+                    Spacer(minLength: 6)
+                    status(session)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    if session.isDone {
+                        Button { ClaudeWatch.dismiss(session.id) } label: { Image(systemName: "xmark") }
+                            .buttonStyle(.borderless)
+                            .help("Seen it")
+                    }
+                }
+                .font(.callout)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    if session.isDone { ClaudeWatch.dismiss(session.id) }
+                    if !session.isWorking { onBack() }
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 8)
+    }
+
+    @ViewBuilder private func icon(_ session: ClaudeWatch.Session) -> some View {
+        switch session.state {
+        case .working: ProgressView().controlSize(.mini)
+        case .needsYou: Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
+        case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        }
+    }
+
+    @ViewBuilder private func status(_ session: ClaudeWatch.Session) -> some View {
+        switch session.state {
+        case .working(let since):
+            TimelineView(.periodic(from: since, by: 1)) { context in
+                let seconds = max(0, Int(context.date.timeIntervalSince(since)))
+                Text(String(format: "%d:%02d", seconds / 60, seconds % 60))
+            }
+        case .needsYou:
+            Text("needs you")
+        case .done(let at):
+            TimelineView(.periodic(from: at, by: 30)) { context in
+                let minutes = Int(context.date.timeIntervalSince(at) / 60)
+                Text(minutes < 1 ? "done just now" : "done \(minutes)m ago")
+            }
+        }
     }
 }
